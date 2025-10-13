@@ -3,6 +3,13 @@ use crate::{
     RouteScope as RouteScopeKind,
 };
 
+use netlink_packet_core::{NLM_F_DUMP, NLM_F_REQUEST, NetlinkMessage, NetlinkPayload};
+use netlink_packet_route::AddressFamily;
+use netlink_packet_route::RouteNetlinkMessage;
+use netlink_packet_route::route::{
+    RouteAddress, RouteAttribute, RouteMessage, RouteProtocol, RouteScope,
+};
+use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::{
@@ -10,11 +17,6 @@ use std::{
     io, thread,
     time::{Duration, Instant},
 };
-use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
-use netlink_packet_core::{NLM_F_DUMP, NLM_F_REQUEST, NetlinkMessage, NetlinkPayload};
-use netlink_packet_route::RouteNetlinkMessage;
-use netlink_packet_route::AddressFamily;
-use netlink_packet_route::route::{RouteAddress, RouteAttribute, RouteMessage, RouteScope, RouteProtocol};
 
 const SEQ_BASE: u32 = 0x6e_72_74_65; // "nrte"
 const RECV_BUFSZ: usize = 1 << 20; // 1MB

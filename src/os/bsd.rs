@@ -96,7 +96,11 @@ unsafe extern "C" {
 
 #[inline]
 fn roundup(len: usize) -> usize {
-    if len == 0 { SA_ALIGN } else { (len + (SA_ALIGN - 1)) & !(SA_ALIGN - 1) }
+    if len == 0 {
+        SA_ALIGN
+    } else {
+        (len + (SA_ALIGN - 1)) & !(SA_ALIGN - 1)
+    }
 }
 
 #[inline]
@@ -127,21 +131,63 @@ fn normalize_gateway(ip: IpAddr) -> IpAddr {
 /// Fetches a sysctl value into a Vec<u8>.
 fn sysctl_vec(mib: &mut [c_int]) -> io::Result<Vec<u8>> {
     let mut len: size_t = 0;
-    let mut r = unsafe { sysctl(mib.as_mut_ptr(), mib.len() as u32, ptr::null_mut(), &mut len, ptr::null_mut(), 0) };
-    if r < 0 { return Err(io::Error::last_os_error()); }
+    let mut r = unsafe {
+        sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as u32,
+            ptr::null_mut(),
+            &mut len,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
 
     let mut buf = vec![0u8; len as usize];
-    r = unsafe { sysctl(mib.as_mut_ptr(), mib.len() as u32, buf.as_mut_ptr() as *mut _, &mut len, ptr::null_mut(), 0) };
+    r = unsafe {
+        sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as u32,
+            buf.as_mut_ptr() as *mut _,
+            &mut len,
+            ptr::null_mut(),
+            0,
+        )
+    };
     if r < 0 {
         let err = io::Error::last_os_error();
         if err.raw_os_error() == Some(libc::ENOMEM) {
             // If the value grew, kernel returns ENOMEM. Retry once.
             let mut len2: size_t = 0;
-            let r2 = unsafe { sysctl(mib.as_mut_ptr(), mib.len() as u32, ptr::null_mut(), &mut len2, ptr::null_mut(), 0) };
-            if r2 < 0 { return Err(io::Error::last_os_error()); }
+            let r2 = unsafe {
+                sysctl(
+                    mib.as_mut_ptr(),
+                    mib.len() as u32,
+                    ptr::null_mut(),
+                    &mut len2,
+                    ptr::null_mut(),
+                    0,
+                )
+            };
+            if r2 < 0 {
+                return Err(io::Error::last_os_error());
+            }
             buf.resize(len2 as usize, 0);
-            let r3 = unsafe { sysctl(mib.as_mut_ptr(), mib.len() as u32, buf.as_mut_ptr() as *mut _, &mut len2, ptr::null_mut(), 0) };
-            if r3 < 0 { return Err(io::Error::last_os_error()); }
+            let r3 = unsafe {
+                sysctl(
+                    mib.as_mut_ptr(),
+                    mib.len() as u32,
+                    buf.as_mut_ptr() as *mut _,
+                    &mut len2,
+                    ptr::null_mut(),
+                    0,
+                )
+            };
+            if r3 < 0 {
+                return Err(io::Error::last_os_error());
+            }
             buf.truncate(len2 as usize);
             return Ok(buf);
         }
@@ -174,12 +220,16 @@ fn ip_from_sockaddr(sa: &libc::sockaddr) -> Option<IpAddr> {
 fn masklen_from_sockaddr(dst: IpAddr, mask_sa: &libc::sockaddr) -> u8 {
     unsafe {
         let sa_len = mask_sa.sa_len as usize;
-        if sa_len == 0 { return 0; }
+        if sa_len == 0 {
+            return 0;
+        }
 
         match dst {
             IpAddr::V4(_) => {
                 const OFF: usize = 4;
-                if sa_len <= OFF { return 0; }
+                if sa_len <= OFF {
+                    return 0;
+                }
                 let n = (sa_len - OFF).min(4);
                 let base = (mask_sa as *const _ as *const u8).add(OFF);
                 let mut bytes = [0u8; 4];
@@ -188,7 +238,9 @@ fn masklen_from_sockaddr(dst: IpAddr, mask_sa: &libc::sockaddr) -> u8 {
             }
             IpAddr::V6(_) => {
                 const OFF: usize = 8;
-                if sa_len <= OFF { return 0; }
+                if sa_len <= OFF {
+                    return 0;
+                }
                 let n = (sa_len - OFF).min(16);
                 let base = (mask_sa as *const _ as *const u8).add(OFF);
                 let mut bytes = [0u8; 16];
@@ -215,13 +267,17 @@ fn parse_one_route(hdr: &rt_msghdr, addr_block: &[u8]) -> Option<RawRoute> {
 
     for idx in 0..RTAX_MAX {
         if (hdr.rtm_addrs & (1 << idx)) != 0 {
-            if off + mem::size_of::<libc::sockaddr>() > addr_block.len() { return None; }
+            if off + mem::size_of::<libc::sockaddr>() > addr_block.len() {
+                return None;
+            }
             let sa = unsafe { &*(addr_block[off..].as_ptr() as *const libc::sockaddr) };
             addrs[idx] = Some(sa as *const libc::sockaddr);
 
             let sa_len = sa.sa_len as usize;
             let step = roundup(if sa_len == 0 { 0 } else { sa_len });
-            if off + step > addr_block.len() { return None; }
+            if off + step > addr_block.len() {
+                return None;
+            }
             off += step;
         }
     }
@@ -229,19 +285,31 @@ fn parse_one_route(hdr: &rt_msghdr, addr_block: &[u8]) -> Option<RawRoute> {
     let dptr = addrs[RTAX_DST]? as *const libc::sockaddr;
     let dst_sa = unsafe { &*dptr };
     let dst_ip = ip_from_sockaddr(dst_sa)?;
-    let mut prefix: u8 = match dst_ip { IpAddr::V4(_) => 32, IpAddr::V6(_) => 128 };
+    let mut prefix: u8 = match dst_ip {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
+    };
 
     if let Some(mptr) = addrs[RTAX_NETMASK] {
         let m_sa = unsafe { &*mptr };
-        prefix = if m_sa.sa_len == 0 { 0 } else { masklen_from_sockaddr(dst_ip, m_sa) };
+        prefix = if m_sa.sa_len == 0 {
+            0
+        } else {
+            masklen_from_sockaddr(dst_ip, m_sa)
+        };
     } else if (hdr.rtm_flags & RTF_HOST) != 0 {
-        prefix = match dst_ip { IpAddr::V4(_) => 32, _ => 128 };
+        prefix = match dst_ip {
+            IpAddr::V4(_) => 32,
+            _ => 128,
+        };
     }
 
     let gateway = if let Some(gptr) = addrs[RTAX_GATEWAY] {
         let g_sa = unsafe { &*gptr };
         ip_from_sockaddr(g_sa).map(normalize_gateway)
-    } else { None };
+    } else {
+        None
+    };
 
     Some(RawRoute {
         dst: dst_ip,
@@ -254,11 +322,21 @@ fn parse_one_route(hdr: &rt_msghdr, addr_block: &[u8]) -> Option<RawRoute> {
 
 fn flags_to_letters(f: c_int) -> Vec<RouteFlag> {
     let mut v = Vec::new();
-    if f & RTF_UP != 0      { v.push(RouteFlag::Up); }
-    if f & RTF_GATEWAY != 0 { v.push(RouteFlag::Gateway); }
-    if f & RTF_HOST != 0    { v.push(RouteFlag::Host); }
-    if f & RTF_REJECT != 0  { v.push(RouteFlag::Reject); }
-    if f & RTF_STATIC != 0  { v.push(RouteFlag::Static); }
+    if f & RTF_UP != 0 {
+        v.push(RouteFlag::Up);
+    }
+    if f & RTF_GATEWAY != 0 {
+        v.push(RouteFlag::Gateway);
+    }
+    if f & RTF_HOST != 0 {
+        v.push(RouteFlag::Host);
+    }
+    if f & RTF_REJECT != 0 {
+        v.push(RouteFlag::Reject);
+    }
+    if f & RTF_STATIC != 0 {
+        v.push(RouteFlag::Static);
+    }
     v
 }
 
@@ -274,7 +352,9 @@ pub fn list_routes_bsd() -> io::Result<Vec<RouteEntry>> {
     while off + mem::size_of::<rt_msghdr>() <= buf.len() {
         let p = unsafe { &*(buf[off..].as_ptr() as *const rt_msghdr) };
         let msglen = p.rtm_msglen as usize;
-        if msglen == 0 || off + msglen > buf.len() { break; }
+        if msglen == 0 || off + msglen > buf.len() {
+            break;
+        }
 
         if p.rtm_version != RTM_VERSION {
             off += msglen;
@@ -300,7 +380,11 @@ pub fn list_routes_bsd() -> io::Result<Vec<RouteEntry>> {
             let on_link = rr.gateway.is_none();
             let gateway = rr.gateway;
             let flags = flags_to_letters(p.rtm_flags);
-            let scope = Some(if on_link { RouteScope::Link } else { RouteScope::Global });
+            let scope = Some(if on_link {
+                RouteScope::Link
+            } else {
+                RouteScope::Global
+            });
 
             let ifindex = Some(rr.ifindex);
             let ifname = ifindex.and_then(|i| if_map.get(&i).cloned());
