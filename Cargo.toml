@@ -1,9 +1,9 @@
 [package]
 name = "netroute"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 authors = ["shellrow <shellrow@foctal.com>"]
-description = "[WIP] Cross-platform routing table enumerator"
+description = "Cross-platform routing table enumerator"
 repository = "https://github.com/shellrow/netroute"
 readme = "README.md"
 keywords = ["network"]
