@@ -11,7 +11,7 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::RouteEntry;
+use crate::{RouteDestination, RouteEntry, RouteFamily, RouteFlag, RouteProtocol, RouteScope};
 
 // Note: We take `&*mut T` instead of just `*mut T` to tie the lifetime of all the returned items
 // to the lifetime of the pointer for some extra safety.
@@ -19,7 +19,7 @@ unsafe fn linked_list_iter<T>(ptr: &*mut T, next: fn(&T) -> *mut T) -> impl Iter
     let mut ptr = ptr.cast_const();
 
     std::iter::from_fn(move || {
-        let cur = unsafe{ ptr.as_ref()? };
+        let cur = unsafe { ptr.as_ref()? };
         ptr = next(cur);
         Some(cur)
     })
@@ -123,48 +123,52 @@ fn ifindex_name_map() -> io::Result<HashMap<u32, String>> {
     Ok(map)
 }
 
-fn proto_to_string(p: NL_ROUTE_PROTOCOL) -> Option<String> {
+fn proto_to_route_protocol(p: NL_ROUTE_PROTOCOL) -> Option<RouteProtocol> {
     use windows_sys::Win32::Networking::WinSock as winsock;
 
-    let s = match p {
-        winsock::MIB_IPPROTO_OTHER => "other",
-        winsock::MIB_IPPROTO_LOCAL => "local",
-        winsock::MIB_IPPROTO_NETMGMT => "netmgmt",
-        winsock::MIB_IPPROTO_ICMP => "icmp",
-        winsock::MIB_IPPROTO_EGP => "egp",
-        winsock::MIB_IPPROTO_GGP => "ggp",
-        winsock::MIB_IPPROTO_HELLO => "hello",
-        winsock::MIB_IPPROTO_RIP => "rip",
-        winsock::MIB_IPPROTO_IS_IS => "isis",
-        winsock::MIB_IPPROTO_ES_IS => "esis",
-        winsock::MIB_IPPROTO_CISCO => "cisco",
-        winsock::MIB_IPPROTO_BBN => "bbn",
-        winsock::MIB_IPPROTO_OSPF => "ospf",
-        winsock::MIB_IPPROTO_BGP => "bgp",
-        winsock::MIB_IPPROTO_NT_AUTOSTATIC => "autostatic",
-        winsock::MIB_IPPROTO_NT_STATIC => "static",
-        winsock::MIB_IPPROTO_NT_STATIC_NON_DOD => "static-non-dod",
-        winsock::MIB_IPPROTO_DHCP => "dhcp",
-        winsock::MIB_IPPROTO_RPL => "rpl",
+    let proto = match p {
+        winsock::MIB_IPPROTO_OTHER => RouteProtocol::Other("other".into()),
+        winsock::MIB_IPPROTO_LOCAL => RouteProtocol::Local,
+        winsock::MIB_IPPROTO_NETMGMT => RouteProtocol::NetMgmt,
+        winsock::MIB_IPPROTO_ICMP => RouteProtocol::Icmp,
+        winsock::MIB_IPPROTO_EGP => RouteProtocol::Egp,
+        winsock::MIB_IPPROTO_GGP => RouteProtocol::Ggp,
+        winsock::MIB_IPPROTO_HELLO => RouteProtocol::Hello,
+        winsock::MIB_IPPROTO_RIP => RouteProtocol::Rip,
+        winsock::MIB_IPPROTO_IS_IS => RouteProtocol::Isis,
+        winsock::MIB_IPPROTO_ES_IS => RouteProtocol::Esis,
+        winsock::MIB_IPPROTO_CISCO => RouteProtocol::Cisco,
+        winsock::MIB_IPPROTO_BBN => RouteProtocol::Bbn,
+        winsock::MIB_IPPROTO_OSPF => RouteProtocol::Ospf,
+        winsock::MIB_IPPROTO_BGP => RouteProtocol::Bgp,
+        winsock::MIB_IPPROTO_NT_AUTOSTATIC => RouteProtocol::Autostatic,
+        winsock::MIB_IPPROTO_NT_STATIC => RouteProtocol::Static,
+        winsock::MIB_IPPROTO_NT_STATIC_NON_DOD => RouteProtocol::StaticNonDod,
+        winsock::MIB_IPPROTO_DHCP => RouteProtocol::Dhcp,
+        winsock::MIB_IPPROTO_RPL => RouteProtocol::Rpl,
         _ => return None,
     };
 
-    Some(s.to_string())
+    Some(proto)
 }
 
-fn normalize_flags(row: &MIB_IPFORWARD_ROW2, on_link: bool) -> Vec<String> {
-    let mut v = vec!["U".to_string()];
+fn normalize_flags(row: &MIB_IPFORWARD_ROW2, on_link: bool) -> Vec<RouteFlag> {
+    let mut v = vec![RouteFlag::Up];
     if !on_link {
-        v.push("G".to_string());
+        v.push(RouteFlag::Gateway);
     }
     if row.Loopback != 0 {
-        v.push("L".to_string());
+        v.push(RouteFlag::Loopback);
     }
     v
 }
 
-fn scope_string(on_link: bool) -> Option<String> {
-    Some(if on_link { "link" } else { "global" }.to_string())
+fn scope(on_link: bool) -> Option<RouteScope> {
+    Some(if on_link {
+        RouteScope::Link
+    } else {
+        RouteScope::Global
+    })
 }
 
 pub fn list_routes_windows() -> io::Result<Vec<RouteEntry>> {
@@ -203,41 +207,34 @@ pub fn list_routes_windows() -> io::Result<Vec<RouteEntry>> {
             let on_link = next_hop.is_none() || is_zero_addr(&row.NextHop);
 
             let family = match row.DestinationPrefix.Prefix.si_family {
-                AF_INET => 4,
-                AF_INET6 => 6,
+                AF_INET => RouteFamily::Ipv4,
+                AF_INET6 => RouteFamily::Ipv6,
                 _ => continue,
             };
 
-            let dst = match (dst_ip, prefix_len) {
-                (IpAddr::V4(v4), p) => format!("{}/{}", v4, p),
-                (IpAddr::V6(v6), p) => format!("{}/{}", v6, p),
-            };
+            let destination = RouteDestination::new(dst_ip, prefix_len);
 
-            let gateway = if on_link {
-                None
-            } else {
-                next_hop.map(|ip| ip.to_string())
-            };
+            let gateway = if on_link { None } else { next_hop };
 
             let ifindex = Some(row.InterfaceIndex);
             let ifname = ifindex.and_then(|idx| ifmap.get(&idx).cloned());
 
             let metric = Some(row.Metric);
-            let proto = proto_to_string(row.Protocol);
+            let protocol = proto_to_route_protocol(row.Protocol);
 
             let flags = normalize_flags(row, on_link);
-            let scope = scope_string(on_link);
+            let scope = scope(on_link);
 
             out.push(RouteEntry {
                 family,
-                dst,
+                destination,
                 gateway,
                 on_link,
                 ifindex,
                 ifname,
                 metric,
                 flags,
-                proto,
+                protocol,
                 scope,
                 table: None,
                 lifetime_ms: None,

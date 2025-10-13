@@ -9,7 +9,7 @@ use std::{
     ptr,
 };
 
-use crate::RouteEntry;
+use crate::{RouteDestination, RouteEntry, RouteFamily, RouteFlag, RouteScope};
 
 const CTL_NET: c_int = 4;
 //const AF_ROUTE: c_int = 17;
@@ -170,22 +170,22 @@ fn masklen_from_sockaddr(dst: IpAddr, mask_sa: &sockaddr) -> u8 {
     }
 }
 
-fn flags_to_letters(f: c_int) -> Vec<String> {
+fn flags_to_letters(f: c_int) -> Vec<RouteFlag> {
     let mut v = Vec::new();
     if f & RTF_UP != 0 {
-        v.push("U".into());
+        v.push(RouteFlag::Up);
     }
     if f & RTF_GATEWAY != 0 {
-        v.push("G".into());
+        v.push(RouteFlag::Gateway);
     }
     if f & RTF_HOST != 0 {
-        v.push("H".into());
+        v.push(RouteFlag::Host);
     }
     if f & RTF_REJECT != 0 {
-        v.push("R".into());
+        v.push(RouteFlag::Reject);
     }
     if f & RTF_STATIC != 0 {
-        v.push("S".into());
+        v.push(RouteFlag::Static);
     }
     v
 }
@@ -327,27 +327,31 @@ pub fn list_routes_macos() -> io::Result<Vec<RouteEntry>> {
 
         if let Some(rr) = parse_one_route(p, addr_block) {
             let family = match rr.dst {
-                IpAddr::V4(_) => 4,
-                IpAddr::V6(_) => 6,
+                IpAddr::V4(_) => RouteFamily::Ipv4,
+                IpAddr::V6(_) => RouteFamily::Ipv6,
             };
-            let dst = format!("{}/{}", rr.dst, rr.prefix);
+            let destination = RouteDestination::new(rr.dst, rr.prefix);
             let on_link = rr.gateway.is_none();
-            let gateway = rr.gateway.map(|ip| ip.to_string());
+            let gateway = rr.gateway;
             let flags = flags_to_letters(p.rtm_flags);
-            let scope = Some(if on_link { "link" } else { "global" }.to_string());
+            let scope = Some(if on_link {
+                RouteScope::Link
+            } else {
+                RouteScope::Global
+            });
             let ifindex = Some(rr.ifindex);
             let ifname = ifindex.and_then(|i| if_map.get(&i).cloned());
 
             out.push(RouteEntry {
                 family,
-                dst,
+                destination,
                 gateway,
                 on_link,
                 ifindex,
                 ifname,
                 metric: None,
                 flags,
-                proto: None,
+                protocol: None,
                 scope,
                 table: None,
                 lifetime_ms: None,

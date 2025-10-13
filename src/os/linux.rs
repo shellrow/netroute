@@ -1,4 +1,7 @@
-use crate::RouteEntry;
+use crate::{
+    RouteDestination, RouteEntry, RouteFamily, RouteFlag, RouteProtocol as RouteProtocolKind,
+    RouteScope as RouteScopeKind,
+};
 
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -186,49 +189,49 @@ fn route_extract(rt: &RouteMessage) -> (Option<IpAddr>, Option<u8>, Option<IpAdd
     (dst, pfx, gw, oif)
 }
 
-fn linux_proto_to_string(p: RouteProtocol) -> Option<String> {
-    let s = match p {
-        RouteProtocol::Unspec => "unspec",
-        RouteProtocol::IcmpRedirect => "icmp-redirect",
-        RouteProtocol::Kernel => "kernel",
-        RouteProtocol::Boot => "boot",
-        RouteProtocol::Static => "static",
-        RouteProtocol::Gated => "gated",
-        RouteProtocol::Ra => "ra",
-        RouteProtocol::Mrt => "mrt",
-        RouteProtocol::Zebra => "zebra",
-        RouteProtocol::Bird => "bird",
-        RouteProtocol::DnRouted => "dnrouted",
-        RouteProtocol::Xorp => "xorp",
-        RouteProtocol::Ntk => "ntk",
-        RouteProtocol::Dhcp => "dhcp",
-        RouteProtocol::Mrouted => "mrouted",
-        RouteProtocol::KeepAlived => "keepalived",
-        RouteProtocol::Babel => "babel",
-        RouteProtocol::Bgp => "bgp",
-        RouteProtocol::Isis => "isis",
-        RouteProtocol::Ospf => "ospf",
-        RouteProtocol::Rip => "rip",
-        RouteProtocol::Eigrp => "eigrp",
-        RouteProtocol::Other(_) => return None,
+fn linux_proto_to_route_protocol(p: RouteProtocol) -> Option<RouteProtocolKind> {
+    let proto = match p {
+        RouteProtocol::Unspec => RouteProtocolKind::Unspecified,
+        RouteProtocol::IcmpRedirect => RouteProtocolKind::IcmpRedirect,
+        RouteProtocol::Kernel => RouteProtocolKind::Kernel,
+        RouteProtocol::Boot => RouteProtocolKind::Boot,
+        RouteProtocol::Static => RouteProtocolKind::Static,
+        RouteProtocol::Gated => RouteProtocolKind::Gated,
+        RouteProtocol::Ra => RouteProtocolKind::RouterAdvertisement,
+        RouteProtocol::Mrt => RouteProtocolKind::Mrt,
+        RouteProtocol::Zebra => RouteProtocolKind::Zebra,
+        RouteProtocol::Bird => RouteProtocolKind::Bird,
+        RouteProtocol::DnRouted => RouteProtocolKind::DnRouted,
+        RouteProtocol::Xorp => RouteProtocolKind::Xorp,
+        RouteProtocol::Ntk => RouteProtocolKind::Ntk,
+        RouteProtocol::Dhcp => RouteProtocolKind::Dhcp,
+        RouteProtocol::Mrouted => RouteProtocolKind::Mrouted,
+        RouteProtocol::KeepAlived => RouteProtocolKind::KeepAlived,
+        RouteProtocol::Babel => RouteProtocolKind::Babel,
+        RouteProtocol::Bgp => RouteProtocolKind::Bgp,
+        RouteProtocol::Isis => RouteProtocolKind::Isis,
+        RouteProtocol::Ospf => RouteProtocolKind::Ospf,
+        RouteProtocol::Rip => RouteProtocolKind::Rip,
+        RouteProtocol::Eigrp => RouteProtocolKind::Eigrp,
+        RouteProtocol::Other(s) => RouteProtocolKind::Other(s.to_string()),
         #[allow(unreachable_patterns)]
         _ => return None,
     };
-    Some(s.to_string())
+    Some(proto)
 }
 
-fn linux_scope_to_string(scope: RouteScope) -> Option<String> {
-    let s = match scope {
-        RouteScope::Universe => "global",
-        RouteScope::Site => "site",
-        RouteScope::Link => "link",
-        RouteScope::Host => "host",
-        RouteScope::NoWhere => "nowhere",
-        RouteScope::Other(_) => return None,
+fn linux_scope_to_route_scope(scope: RouteScope) -> Option<RouteScopeKind> {
+    let scope = match scope {
+        RouteScope::Universe => RouteScopeKind::Global,
+        RouteScope::Site => RouteScopeKind::Site,
+        RouteScope::Link => RouteScopeKind::Link,
+        RouteScope::Host => RouteScopeKind::Host,
+        RouteScope::NoWhere => RouteScopeKind::Nowhere,
+        RouteScope::Other(s) => RouteScopeKind::Other(s.to_string()),
         #[allow(unreachable_patterns)]
         _ => return None,
     };
-    Some(s.to_string())
+    Some(scope)
 }
 
 fn route_metric(attrs: &[RouteAttribute]) -> Option<u32> {
@@ -240,14 +243,19 @@ fn route_metric(attrs: &[RouteAttribute]) -> Option<u32> {
     None
 }
 
-fn flags_from_linux(rt: &RouteMessage, on_link: bool, prefix_len: Option<u8>, dst: &Option<IpAddr>) -> Vec<String> {
+fn flags_from_linux(
+    rt: &RouteMessage,
+    on_link: bool,
+    prefix_len: Option<u8>,
+    dst: &Option<IpAddr>,
+) -> Vec<RouteFlag> {
     // - "U": up
     // - "G": gateway (next-hop, not on_link)
     // - "H": host route (32 or 128)
     // - "L": link/scope==link
-    let mut v = vec!["U".to_string()];
+    let mut v = vec![RouteFlag::Up];
     if !on_link {
-        v.push("G".to_string());
+        v.push(RouteFlag::Gateway);
     }
     if let (Some(pfx), Some(ip)) = (prefix_len, dst) {
         let is_host = match (ip, pfx) {
@@ -256,27 +264,23 @@ fn flags_from_linux(rt: &RouteMessage, on_link: bool, prefix_len: Option<u8>, ds
             _ => false,
         };
         if is_host {
-            v.push("H".to_string());
+            v.push(RouteFlag::Host);
         }
     }
-    if linux_scope_to_string(rt.header.scope).as_deref() == Some("link") {
-        v.push("L".to_string());
+    if matches!(
+        linux_scope_to_route_scope(rt.header.scope),
+        Some(RouteScopeKind::Link)
+    ) {
+        v.push(RouteFlag::Link);
     }
     v
 }
 
-fn family_from_af(af: AddressFamily) -> Option<u8> {
+fn family_from_af(af: AddressFamily) -> Option<RouteFamily> {
     match af {
-        AddressFamily::Inet => Some(4),
-        AddressFamily::Inet6 => Some(6),
+        AddressFamily::Inet => Some(RouteFamily::Ipv4),
+        AddressFamily::Inet6 => Some(RouteFamily::Ipv6),
         _ => None,
-    }
-}
-
-fn dst_string(ip: IpAddr, pfx: u8) -> String {
-    match (ip, pfx) {
-        (IpAddr::V4(v4), p) => format!("{}/{}", v4, p),
-        (IpAddr::V6(v6), p) => format!("{}/{}", v6, p),
     }
 }
 
@@ -298,27 +302,19 @@ pub fn list_routes_linux() -> io::Result<Vec<RouteEntry>> {
         // default route
         let (dst_ip, pfx) = match (dst_ip_opt, pfx_opt) {
             (Some(ip), Some(p)) => (ip, p),
-            (None, Some(0)) => {
-                // 0.0.0.0/0 or ::/0 from family
-                match family {
-                    4 => (IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-                    6 => (IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-                    _ => continue,
-                }
-            }
+            (None, Some(0)) => match family {
+                RouteFamily::Ipv4 => (IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                RouteFamily::Ipv6 => (IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+            },
             (Some(IpAddr::V4(ip)), None) => (IpAddr::V4(ip), 32),
             (Some(IpAddr::V6(ip)), None) => (IpAddr::V6(ip), 128),
             _ => continue,
         };
 
-        let dst = dst_string(dst_ip, pfx);
+        let destination = RouteDestination::new(dst_ip, pfx);
 
         let on_link = gw_ip_opt.is_none();
-        let gateway = if on_link {
-            None
-        } else {
-            gw_ip_opt.map(|ip| ip.to_string())
-        };
+        let gateway = if on_link { None } else { gw_ip_opt };
 
         // ifindex / ifname
         let ifindex = oif_opt;
@@ -328,8 +324,8 @@ pub fn list_routes_linux() -> io::Result<Vec<RouteEntry>> {
         let metric = route_metric(&rt.attributes);
 
         // proto / scope / table
-        let proto = linux_proto_to_string(rt.header.protocol);
-        let scope = linux_scope_to_string(rt.header.scope);
+        let protocol = linux_proto_to_route_protocol(rt.header.protocol);
+        let scope = linux_scope_to_route_scope(rt.header.scope);
         let table = Some(rt.header.table as u32);
 
         // flags (U, G, H, L, ...)
@@ -339,14 +335,14 @@ pub fn list_routes_linux() -> io::Result<Vec<RouteEntry>> {
 
         out.push(RouteEntry {
             family,
-            dst,
+            destination,
             gateway,
             on_link,
             ifindex,
             ifname,
             metric,
             flags,
-            proto,
+            protocol,
             scope,
             table,
             lifetime_ms,
