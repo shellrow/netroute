@@ -30,24 +30,24 @@ impl fmt::Display for RouteFamily {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct RouteDestination {
     /// Network address.
-    pub address: IpAddr,
+    pub addr: IpAddr,
     /// Prefix length in bits.
-    pub prefix_length: u8,
+    pub prefix_len: u8,
 }
 
 impl RouteDestination {
     /// Creates a new [`RouteDestination`].
-    pub fn new(address: IpAddr, prefix_length: u8) -> Self {
+    pub fn new(addr: IpAddr, prefix_len: u8) -> Self {
         Self {
-            address,
-            prefix_length,
+            addr,
+            prefix_len,
         }
     }
 }
 
 impl fmt::Display for RouteDestination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}", self.address, self.prefix_length)
+        write!(f, "{}/{}", self.addr, self.prefix_len)
     }
 }
 
