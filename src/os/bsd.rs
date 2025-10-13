@@ -262,8 +262,9 @@ struct RawRoute {
 }
 
 fn parse_one_route(hdr: &rt_msghdr, addr_block: &[u8]) -> Option<RawRoute> {
+    const MSG_START_INDEX: usize = 60;
     let mut addrs: [Option<*const libc::sockaddr>; RTAX_MAX] = [None; RTAX_MAX];
-    let mut off = 0usize;
+    let mut off = MSG_START_INDEX;
 
     for idx in 0..RTAX_MAX {
         if (hdr.rtm_addrs & (1 << idx)) != 0 {
