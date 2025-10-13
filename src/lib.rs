@@ -38,10 +38,7 @@ pub struct RouteDestination {
 impl RouteDestination {
     /// Creates a new [`RouteDestination`].
     pub fn new(addr: IpAddr, prefix_len: u8) -> Self {
-        Self {
-            addr,
-            prefix_len,
-        }
+        Self { addr, prefix_len }
     }
 }
 
@@ -94,7 +91,11 @@ impl RouteFlag {
             RouteFlag::Reject => "R".to_string(),
             RouteFlag::Static => "S".to_string(),
             RouteFlag::Loopback => "L".to_string(),
-            RouteFlag::Other(s) => s.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or("?".to_string()),
+            RouteFlag::Other(s) => s
+                .chars()
+                .next()
+                .map(|c| c.to_ascii_uppercase().to_string())
+                .unwrap_or("?".to_string()),
         }
     }
 
