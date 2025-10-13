@@ -127,6 +127,7 @@ pub enum RouteScope {
     Other(String),
 }
 
+/// A single entry from the operating system routing table.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct RouteEntry {
