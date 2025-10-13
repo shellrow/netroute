@@ -1,7 +1,10 @@
+[crates-badge]: https://img.shields.io/crates/v/netroute.svg
+[crates-url]: https://crates.io/crates/netroute
+[license-badge]: https://img.shields.io/crates/l/netroute.svg
 [examples-url]: https://github.com/shellrow/netroute/tree/main/examples
 [doc-url]: https://docs.rs/netroute/latest/netroute
 
-# netroute
+# netroute [![Crates.io][crates-badge]][crates-url] ![License][license-badge]
 Cross-platform routing table enumerator
 
 ## Usage
