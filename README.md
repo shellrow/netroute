@@ -10,13 +10,13 @@ Add `netroute` to your dependencies
 
 ```toml
 [dependencies]
-netroute = "0.1"
+netroute = "0.2"
 ```
 
 Enable the optional `serde` feature to serialize the collected routes:
 
 ```toml
-netroute = { version = "0.1", features = ["serde"] }
+netroute = { version = "0.2", features = ["serde"] }
 ```
 
 For more details, see [examples][examples-url] or [doc][doc-url].  
