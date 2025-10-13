@@ -1,0 +1,48 @@
+[package]
+name = "netroute"
+version = "0.0.1"
+edition = "2024"
+authors = ["shellrow <shellrow@foctal.com>"]
+description = "[WIP] Cross-platform routing table enumerator"
+repository = "https://github.com/shellrow/netroute"
+readme = "README.md"
+keywords = ["network"]
+categories = ["network-programming"]
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+thiserror = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+netlink-packet-core = "0.8"
+netlink-packet-route = "0.25"
+netlink-sys = "0.8"
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.59"
+features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_NetworkManagement_Ndis",
+]
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[[example]]
+name = "dump"
+path = "examples/dump.rs"
+
+[[example]]
+name = "serialize"
+path = "examples/serialize.rs"
+required-features = ["serde"]
