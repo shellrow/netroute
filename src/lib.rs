@@ -30,24 +30,21 @@ impl fmt::Display for RouteFamily {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct RouteDestination {
     /// Network address.
-    pub address: IpAddr,
+    pub addr: IpAddr,
     /// Prefix length in bits.
-    pub prefix_length: u8,
+    pub prefix_len: u8,
 }
 
 impl RouteDestination {
     /// Creates a new [`RouteDestination`].
-    pub fn new(address: IpAddr, prefix_length: u8) -> Self {
-        Self {
-            address,
-            prefix_length,
-        }
+    pub fn new(addr: IpAddr, prefix_len: u8) -> Self {
+        Self { addr, prefix_len }
     }
 }
 
 impl fmt::Display for RouteDestination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}", self.address, self.prefix_length)
+        write!(f, "{}/{}", self.addr, self.prefix_len)
     }
 }
 
@@ -71,6 +68,68 @@ pub enum RouteFlag {
     Loopback,
     /// Platform-specific flag that is not covered by the predefined variants.
     Other(String),
+}
+
+impl RouteFlag {
+    /// Returns a single-character abbreviation commonly used by `netstat` or `ip route`.
+    ///
+    /// Examples:
+    /// - `Up` -> `"U"`
+    /// - `Gateway` -> `"G"`
+    /// - `Host` -> `"H"`
+    /// - `Link` -> `"L"`
+    /// - `Reject` -> `"R"`
+    /// - `Static` -> `"S"`
+    /// - `Loopback` -> `"L"`
+    /// - `Other(x)` -> first char of `x` (uppercased)
+    pub fn short(&self) -> String {
+        match self {
+            RouteFlag::Up => "U".to_string(),
+            RouteFlag::Gateway => "G".to_string(),
+            RouteFlag::Host => "H".to_string(),
+            RouteFlag::Link => "L".to_string(),
+            RouteFlag::Reject => "R".to_string(),
+            RouteFlag::Static => "S".to_string(),
+            RouteFlag::Loopback => "L".to_string(),
+            RouteFlag::Other(s) => s
+                .chars()
+                .next()
+                .map(|c| c.to_ascii_uppercase().to_string())
+                .unwrap_or("?".to_string()),
+        }
+    }
+
+    /// Returns a human-readable description of this flag.
+    ///
+    /// Examples:
+    /// - `"U"` -> `"Up (route is usable)"`
+    /// - `"G"` -> `"Gateway (next-hop via router)"`
+    /// - `"H"` -> `"Host (single-host route)"`
+    pub fn description(&self) -> &'static str {
+        match self {
+            RouteFlag::Up => "Up (route is usable)",
+            RouteFlag::Gateway => "Gateway (next-hop via router)",
+            RouteFlag::Host => "Host (single-host route)",
+            RouteFlag::Link => "Link (restricted to local link)",
+            RouteFlag::Reject => "Reject (deny matching traffic)",
+            RouteFlag::Static => "Static (manually installed)",
+            RouteFlag::Loopback => "Loopback (local loopback route)",
+            RouteFlag::Other(_) => "Other (platform-specific)",
+        }
+    }
+
+    /// Converts a single-character abbreviation (like `"U"`, `"G"`) back into a [`RouteFlag`].
+    pub fn from_short(ch: &str) -> Option<Self> {
+        match ch.to_ascii_uppercase().as_str() {
+            "U" => Some(RouteFlag::Up),
+            "G" => Some(RouteFlag::Gateway),
+            "H" => Some(RouteFlag::Host),
+            "L" => Some(RouteFlag::Link),
+            "R" => Some(RouteFlag::Reject),
+            "S" => Some(RouteFlag::Static),
+            _ => Some(RouteFlag::Other(ch.to_string())),
+        }
+    }
 }
 
 /// Known routing protocols that may appear in the table.
