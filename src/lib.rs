@@ -77,14 +77,14 @@ impl RouteFlag {
     /// Returns a single-character abbreviation commonly used by `netstat` or `ip route`.
     ///
     /// Examples:
-    /// - `Up` → `"U"`
-    /// - `Gateway` → `"G"`
-    /// - `Host` → `"H"`
-    /// - `Link` → `"L"`
-    /// - `Reject` → `"R"`
-    /// - `Static` → `"S"`
-    /// - `Loopback` → `"L"`
-    /// - `Other(x)` → first char of `x` (uppercased)
+    /// - `Up` -> `"U"`
+    /// - `Gateway` -> `"G"`
+    /// - `Host` -> `"H"`
+    /// - `Link` -> `"L"`
+    /// - `Reject` -> `"R"`
+    /// - `Static` -> `"S"`
+    /// - `Loopback` -> `"L"`
+    /// - `Other(x)` -> first char of `x` (uppercased)
     pub fn short(&self) -> String {
         match self {
             RouteFlag::Up => "U".to_string(),
@@ -101,9 +101,9 @@ impl RouteFlag {
     /// Returns a human-readable description of this flag.
     ///
     /// Examples:
-    /// - `"U"` → `"Up (route is usable)"`
-    /// - `"G"` → `"Gateway (next-hop via router)"`
-    /// - `"H"` → `"Host (single-host route)"`
+    /// - `"U"` -> `"Up (route is usable)"`
+    /// - `"G"` -> `"Gateway (next-hop via router)"`
+    /// - `"H"` -> `"Host (single-host route)"`
     pub fn description(&self) -> &'static str {
         match self {
             RouteFlag::Up => "Up (route is usable)",
