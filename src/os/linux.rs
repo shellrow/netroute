@@ -27,11 +27,22 @@ fn nlmsg_align(n: usize) -> usize {
     (n + NLMSG_ALIGNTO - 1) & !(NLMSG_ALIGNTO - 1)
 }
 
+#[cfg(target_os = "linux")]
 fn open_route_socket() -> io::Result<Socket> {
     let mut sock = Socket::new(NETLINK_ROUTE)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("netlink open: {e}")))?;
     sock.bind_auto()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("bind_auto: {e}")))?;
+    sock.set_non_blocking(true).ok();
+    Ok(sock)
+}
+
+#[cfg(target_os = "android")]
+fn open_route_socket() -> io::Result<Socket> {
+    let sock = Socket::new(NETLINK_ROUTE)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("netlink open: {e}")))?;
+    // On Android 11+, bind is denied by SELinux
+    //sock.bind_auto().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("bind_auto: {e}")))?;
     sock.set_non_blocking(true).ok();
     Ok(sock)
 }
