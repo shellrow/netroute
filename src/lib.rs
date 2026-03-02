@@ -1,12 +1,4 @@
 //! Cross-platform routing table enumerator.
-//!
-//! # Example
-//! ```rust
-//! use netroute::list_routes;
-//!
-//! let routes = list_routes()?;
-//! println!("{} routes", routes.len());
-//! ```
 
 mod os;
 
