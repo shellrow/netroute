@@ -204,13 +204,13 @@ fn parse_one_route(hdr: &rt_msghdr, addr_block: &[u8]) -> Option<RawRoute> {
     let mut addrs: [Option<*const sockaddr>; RTAX_MAX] = [None; RTAX_MAX];
     let mut off = 0usize;
 
-    for idx in 0..RTAX_MAX {
+    for (idx, slot) in addrs.iter_mut().enumerate().take(RTAX_MAX) {
         if (hdr.rtm_addrs & (1 << idx)) != 0 {
             if off + mem::size_of::<sockaddr>() > addr_block.len() {
                 return None;
             }
             let sa = unsafe { &*(addr_block[off..].as_ptr() as *const sockaddr) };
-            addrs[idx] = Some(sa as *const sockaddr);
+            *slot = Some(sa as *const sockaddr);
 
             let sa_len = sa.sa_len as usize;
             let step = roundup(if sa_len == 0 { 0 } else { sa_len });
@@ -221,7 +221,7 @@ fn parse_one_route(hdr: &rt_msghdr, addr_block: &[u8]) -> Option<RawRoute> {
         }
     }
 
-    let dptr = addrs[RTAX_DST]? as *const sockaddr;
+    let dptr = addrs[RTAX_DST]?;
     let dst_sa = unsafe { &*dptr };
     let dst_ip = ip_from_sockaddr(dst_sa)?;
     let mut prefix: u8 = match dst_ip {

@@ -1,3 +1,5 @@
+//! Cross-platform routing table enumerator.
+
 mod os;
 
 use std::fmt;
@@ -71,6 +73,24 @@ pub enum RouteFlag {
 }
 
 impl RouteFlag {
+    /// Returns the single-character abbreviation as a code point.
+    pub fn short_code(&self) -> char {
+        match self {
+            RouteFlag::Up => 'U',
+            RouteFlag::Gateway => 'G',
+            RouteFlag::Host => 'H',
+            RouteFlag::Link => 'L',
+            RouteFlag::Reject => 'R',
+            RouteFlag::Static => 'S',
+            RouteFlag::Loopback => 'L',
+            RouteFlag::Other(s) => s
+                .chars()
+                .next()
+                .map(|c| c.to_ascii_uppercase())
+                .unwrap_or('?'),
+        }
+    }
+
     /// Returns a single-character abbreviation commonly used by `netstat` or `ip route`.
     ///
     /// Examples:
@@ -83,20 +103,7 @@ impl RouteFlag {
     /// - `Loopback` -> `"L"`
     /// - `Other(x)` -> first char of `x` (uppercased)
     pub fn short(&self) -> String {
-        match self {
-            RouteFlag::Up => "U".to_string(),
-            RouteFlag::Gateway => "G".to_string(),
-            RouteFlag::Host => "H".to_string(),
-            RouteFlag::Link => "L".to_string(),
-            RouteFlag::Reject => "R".to_string(),
-            RouteFlag::Static => "S".to_string(),
-            RouteFlag::Loopback => "L".to_string(),
-            RouteFlag::Other(s) => s
-                .chars()
-                .next()
-                .map(|c| c.to_ascii_uppercase().to_string())
-                .unwrap_or("?".to_string()),
-        }
+        self.short_code().to_string()
     }
 
     /// Returns a human-readable description of this flag.
@@ -120,14 +127,20 @@ impl RouteFlag {
 
     /// Converts a single-character abbreviation (like `"U"`, `"G"`) back into a [`RouteFlag`].
     pub fn from_short(ch: &str) -> Option<Self> {
-        match ch.to_ascii_uppercase().as_str() {
-            "U" => Some(RouteFlag::Up),
-            "G" => Some(RouteFlag::Gateway),
-            "H" => Some(RouteFlag::Host),
-            "L" => Some(RouteFlag::Link),
-            "R" => Some(RouteFlag::Reject),
-            "S" => Some(RouteFlag::Static),
-            _ => Some(RouteFlag::Other(ch.to_string())),
+        let mut chars = ch.chars();
+        let c = chars.next()?;
+        if chars.next().is_some() {
+            return None;
+        }
+
+        match c.to_ascii_uppercase() {
+            'U' => Some(RouteFlag::Up),
+            'G' => Some(RouteFlag::Gateway),
+            'H' => Some(RouteFlag::Host),
+            'L' => Some(RouteFlag::Link),
+            'R' => Some(RouteFlag::Reject),
+            'S' => Some(RouteFlag::Static),
+            _ => Some(RouteFlag::Other(ch.to_ascii_uppercase())),
         }
     }
 }
