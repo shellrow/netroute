@@ -107,7 +107,7 @@ fn roundup(len: usize) -> usize {
 fn normalize_scoped_v6(gw: Ipv6Addr) -> Ipv6Addr {
     // Normalize link-local IPv6 addresses (e.g., FE80::/10) by stripping the scope ID.
     let seg0 = gw.segments()[0];
-    let is_ll = seg0 == 0xfe80;
+    let is_ll = (seg0 & 0xffc0) == 0xfe80;
     let oct = gw.octets();
     let is_mc = oct[0] == 0xff;
     let mc_scope = oct[1] & 0x0f; // 1=node-local, 2=link-local
