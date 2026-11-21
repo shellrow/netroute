@@ -1,4 +1,5 @@
-# target platforms
+$ErrorActionPreference = "Stop"
+
 $targets = @(
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
@@ -7,14 +8,8 @@ $targets = @(
     "x86_64-linux-android"
 )
 
-# cross build
 foreach ($target in $targets) {
-    Write-Host "==> Building for $target..."
-    $result = & cross build --target $target
-    Write-Host "✅ Success: $target"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "❌ Build failed for $target"
-        exit 1
-    }
+    Write-Host "Building for $target"
+    cross build --all-features --target $target
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
-Write-Host "✅ All builds succeeded."
