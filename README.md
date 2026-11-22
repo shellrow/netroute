@@ -18,7 +18,7 @@ or
 
 ```toml
 [dependencies]
-netroute = "0.4"
+netroute = "0.5"
 ```
 
 ## Usage
