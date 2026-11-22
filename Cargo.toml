@@ -1,7 +1,8 @@
 [package]
 name = "netroute"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
+rust-version = "1.85"
 authors = ["shellrow <shellrow@foctal.com>"]
 description = "Cross-platform routing table enumerator"
 repository = "https://github.com/shellrow/netroute"
@@ -9,20 +10,21 @@ readme = "README.md"
 keywords = ["network"]
 categories = ["network-programming"]
 license = "MIT"
+include = ["/src", "/examples", "/tests", "/README.md", "/LICENSE"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = "0.2.191"
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
-netlink-packet-core = "0.8"
-netlink-packet-route = "0.25"
-netlink-sys = "0.8"
+netlink-packet-core = "0.9"
+netlink-packet-route = "0.34"
+nix = { version = "0.32", features = ["socket"] }
 
 [target.'cfg(windows)'.dependencies.windows-sys]
-version = "0.59"
+version = "0.61"
 features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
@@ -38,10 +40,5 @@ default = []
 serde = ["dep:serde"]
 
 [[example]]
-name = "dump"
-path = "examples/dump.rs"
-
-[[example]]
 name = "serialize"
-path = "examples/serialize.rs"
 required-features = ["serde"]

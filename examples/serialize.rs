@@ -1,9 +1,10 @@
-fn main() {
-    match netroute::list_routes() {
-        Ok(routes) => match serde_json::to_string_pretty(&routes) {
-            Ok(json) => println!("{}", json),
-            Err(e) => eprintln!("Error serializing routes to JSON: {}", e),
-        },
-        Err(e) => eprintln!("Error listing routes: {}", e),
-    }
+use std::io::{self, Write};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let routes = netroute::list_routes()?;
+    let mut out = io::BufWriter::new(io::stdout().lock());
+    serde_json::to_writer_pretty(&mut out, &routes)?;
+    writeln!(out)?;
+    out.flush()?;
+    Ok(())
 }

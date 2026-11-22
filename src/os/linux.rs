@@ -1,209 +1,156 @@
+use std::{
+    io,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    os::fd::AsRawFd,
+};
+
+use netlink_packet_core::{
+    NLM_F_DUMP, NLM_F_DUMP_INTR, NLM_F_REQUEST, NetlinkBuffer, NetlinkMessage, NetlinkPayload,
+};
+use netlink_packet_route::{
+    AddressFamily, RouteNetlinkMessage,
+    route::{
+        RouteAddress, RouteAttribute, RouteFlags, RouteMessage, RouteNextHop, RouteNextHopFlags,
+        RouteProtocol, RouteScope, RouteType, RouteVia,
+    },
+};
+use nix::sys::{
+    socket::{self, MsgFlags, NetlinkAddr, SockFlag, SockProtocol, SockType, sockopt},
+    time::TimeVal,
+};
+
+use super::unix::InterfaceNames;
 use crate::{
     RouteDestination, RouteEntry, RouteFamily, RouteFlag, RouteProtocol as RouteProtocolKind,
     RouteScope as RouteScopeKind,
 };
 
-use netlink_packet_core::{NLM_F_DUMP, NLM_F_REQUEST, NetlinkMessage, NetlinkPayload};
-use netlink_packet_route::AddressFamily;
-use netlink_packet_route::RouteNetlinkMessage;
-use netlink_packet_route::route::{
-    RouteAddress, RouteAttribute, RouteMessage, RouteProtocol, RouteScope,
-};
-use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
-use std::io::ErrorKind;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::{
-    collections::HashMap,
-    io, thread,
-    time::{Duration, Instant},
-};
-
-const SEQ_BASE: u32 = 0x6e_72_74_65; // "nrte"
-const RECV_BUFSZ: usize = 1 << 20; // 1MB
-const RECV_TIMEOUT: Duration = Duration::from_secs(2);
-const NLMSG_ALIGNTO: usize = 4;
-const MIN_NLMSG_HEADER_LEN: usize = 16;
-
-#[inline]
-fn nlmsg_align(n: usize) -> usize {
-    (n + NLMSG_ALIGNTO - 1) & !(NLMSG_ALIGNTO - 1)
+fn invalid(reason: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, reason)
 }
 
-#[cfg(target_os = "linux")]
-fn open_route_socket() -> io::Result<Socket> {
-    let mut sock = Socket::new(NETLINK_ROUTE)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("netlink open: {e}")))?;
-    sock.bind_auto()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("bind_auto: {e}")))?;
-    sock.set_non_blocking(true).ok();
-    Ok(sock)
-}
-
-#[cfg(target_os = "android")]
-fn open_route_socket() -> io::Result<Socket> {
-    let sock = Socket::new(NETLINK_ROUTE)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("netlink open: {e}")))?;
-    // On Android 11+, bind is denied by SELinux
-    //sock.bind_auto().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("bind_auto: {e}")))?;
-    sock.set_non_blocking(true).ok();
-    Ok(sock)
-}
-
-fn send_dump(sock: &mut Socket, msg: RouteNetlinkMessage, seq: u32) -> io::Result<()> {
-    let mut nl = NetlinkMessage::from(msg);
-    nl.header.flags = NLM_F_REQUEST | NLM_F_DUMP;
-    nl.header.sequence_number = seq;
-    nl.header.port_number = 0;
-
-    // Finalize to set length
-    nl.finalize();
-
-    let blen = nl.buffer_len();
-    if blen < MIN_NLMSG_HEADER_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("netlink message too short: buffer_len={}", blen),
-        ));
+fn kernel_error(code: i32) -> io::Error {
+    match code.checked_neg() {
+        Some(errno) if errno > 0 => io::Error::from_raw_os_error(errno),
+        _ => invalid("invalid netlink error code"),
     }
-
-    let mut buf = vec![0; blen];
-    nl.serialize(&mut buf);
-
-    let kernel = SocketAddr::new(0, 0);
-    sock.send_to(&buf, &kernel, 0)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("netlink send: {e}")))?;
-    Ok(())
 }
 
-fn recv_multi(
-    sock: &mut Socket,
-    expect_seq: u32,
-) -> io::Result<Vec<NetlinkMessage<RouteNetlinkMessage>>> {
-    let mut out = Vec::new();
-    let mut buf = vec![0u8; RECV_BUFSZ];
-    let kernel = SocketAddr::new(0, 0);
-    let deadline = Instant::now() + RECV_TIMEOUT;
-
-    loop {
-        match sock.recv_from(&mut &mut buf[..], 0) {
-            Ok((size, from)) => {
-                let _ = from == kernel;
-                let mut offset = 0usize;
-
-                while offset < size {
-                    if size - offset < MIN_NLMSG_HEADER_LEN {
-                        break;
-                    }
-
-                    let bytes = &buf[offset..size];
-
-                    let msg =
-                        NetlinkMessage::<RouteNetlinkMessage>::deserialize(bytes).map_err(|e| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("deserialize: {e:?}"),
-                            )
-                        })?;
-
-                    let consumed = msg.header.length as usize;
-                    if consumed < MIN_NLMSG_HEADER_LEN || offset + consumed > size {
-                        break;
-                    }
-
-                    if msg.header.sequence_number != expect_seq {
-                        offset += nlmsg_align(consumed);
-                        continue;
-                    }
-
-                    match &msg.payload {
-                        NetlinkPayload::Done(_) => {
-                            return Ok(out);
-                        }
-                        NetlinkPayload::Error(e) => {
-                            if let Some(code) = e.code {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::Other,
-                                    format!("netlink error: code={}", code),
-                                ));
-                            }
-                            // code==None: possibly ACK ... ignore
-                        }
-                        NetlinkPayload::Noop | NetlinkPayload::Overrun(_) => { /* skip */ }
-                        _ => out.push(msg),
-                    }
-
-                    // Align to 4-byte boundary
-                    offset += nlmsg_align(consumed);
+fn parse_datagram(
+    mut bytes: &[u8],
+    seq: u32,
+    mut route: impl FnMut(RouteMessage) -> io::Result<()>,
+) -> io::Result<bool> {
+    if bytes.is_empty() {
+        return Err(invalid("empty netlink datagram"));
+    }
+    while !bytes.is_empty() {
+        let packet = NetlinkBuffer::new_checked(bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let len = packet.length() as usize;
+        let frame = &bytes[..len];
+        // The final frame does not require trailing padding.
+        bytes = if len == bytes.len() {
+            &[]
+        } else {
+            bytes
+                .get(len.next_multiple_of(4)..)
+                .ok_or_else(|| invalid("short netlink padding"))?
+        };
+        if packet.sequence_number() != seq {
+            continue;
+        }
+        if packet.flags() & NLM_F_DUMP_INTR != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "routing table changed during dump",
+            ));
+        }
+        let msg = NetlinkMessage::<RouteNetlinkMessage>::deserialize(frame)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        match msg.payload {
+            NetlinkPayload::Done(done) if done.code == 0 => return Ok(true),
+            NetlinkPayload::Done(done) => return Err(kernel_error(done.code)),
+            NetlinkPayload::Error(err) => {
+                if let Some(code) = err.code {
+                    return Err(kernel_error(code.get()));
                 }
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
-                    // timeout
-                    return Ok(out);
-                }
-                thread::sleep(Duration::from_millis(5));
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
-
-pub fn dump_routes() -> io::Result<Vec<RouteMessage>> {
-    let mut sock = open_route_socket()?;
-    let seq = SEQ_BASE ^ 0x03;
-    send_dump(
-        &mut sock,
-        RouteNetlinkMessage::GetRoute(RouteMessage::default()),
-        seq,
-    )?;
-    let msgs = recv_multi(&mut sock, seq)?;
-    let mut out = Vec::new();
-    for m in msgs {
-        if let NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewRoute(rt)) = m.payload {
-            out.push(rt);
-        }
-    }
-    Ok(out)
-}
-
-fn route_addr_to_ip(a: &RouteAddress) -> Option<IpAddr> {
-    match a {
-        RouteAddress::Inet(v4) => Some(IpAddr::V4(*v4)),
-        RouteAddress::Inet6(v6) => Some(IpAddr::V6(*v6)),
-        _ => None,
-    }
-}
-
-fn route_extract(rt: &RouteMessage) -> (Option<IpAddr>, Option<u8>, Option<IpAddr>, Option<u32>) {
-    // (dst, prefix, gateway, oif)
-    let mut dst: Option<IpAddr> = None;
-    let pfx: Option<u8> = Some(rt.header.destination_prefix_length);
-    let mut gw: Option<IpAddr> = None;
-    let mut oif: Option<u32> = None;
-
-    for nla in &rt.attributes {
-        match nla {
-            RouteAttribute::Destination(a) => dst = route_addr_to_ip(a),
-            RouteAttribute::Gateway(a) => gw = route_addr_to_ip(a),
-            RouteAttribute::Oif(i) => oif = Some(*i),
+            NetlinkPayload::Overrun(_) => return Err(io::Error::from_raw_os_error(libc::ENOBUFS)),
+            NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewRoute(rt)) => route(rt)?,
             _ => {}
         }
     }
-
-    // if dst is None and pfx is 0, it means default route
-    if dst.is_none() && pfx == Some(0) {
-        dst = match rt.header.address_family {
-            AddressFamily::Inet => Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
-            AddressFamily::Inet6 => Some(IpAddr::V6(Ipv6Addr::UNSPECIFIED)),
-            _ => None,
-        };
-    }
-
-    (dst, pfx, gw, oif)
+    Ok(false)
 }
 
-fn linux_proto_to_route_protocol(p: RouteProtocol) -> Option<RouteProtocolKind> {
-    let proto = match p {
+fn dump() -> io::Result<Vec<RouteEntry>> {
+    // send_to autobinds a private port, including on Android where an explicit
+    // bind may be denied. Each dump owns its socket and sequence space.
+    let sock = socket::socket(
+        socket::AddressFamily::Netlink,
+        SockType::Datagram,
+        SockFlag::SOCK_CLOEXEC,
+        SockProtocol::NetlinkRoute,
+    )?;
+    socket::setsockopt(&sock, sockopt::ReceiveTimeout, &TimeVal::new(2, 0))?;
+    let fd = sock.as_raw_fd();
+    let kernel = NetlinkAddr::new(0, 0);
+    let mut request = NetlinkMessage::from(RouteNetlinkMessage::GetRoute(RouteMessage::default()));
+    request.header.sequence_number = 1;
+    request.header.flags = NLM_F_REQUEST | NLM_F_DUMP;
+    request.finalize();
+    let mut bytes = vec![0; request.buffer_len()];
+    request.serialize(&mut bytes);
+    socket::sendto(fd, &bytes, &kernel, MsgFlags::empty())?;
+
+    let mut names = InterfaceNames::default();
+    let mut out = Vec::new();
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    loop {
+        // Peek at the datagram size so a large route cannot be truncated.
+        // This private socket has a single reader.
+        let len =
+            socket::recv(fd, &mut [], MsgFlags::MSG_PEEK | MsgFlags::MSG_TRUNC).map_err(|e| {
+                if e == nix::errno::Errno::EAGAIN {
+                    io::ErrorKind::TimedOut.into()
+                } else {
+                    io::Error::from(e)
+                }
+            })?;
+        bytes.resize(len, 0);
+        let (read, from) = socket::recvfrom::<NetlinkAddr>(fd, &mut bytes)?;
+        if read != len {
+            return Err(invalid("incomplete netlink datagram"));
+        }
+        if from == Some(kernel)
+            && parse_datagram(&bytes, request.header.sequence_number, |rt| {
+                append_route(rt, &mut names, ticks, &mut out)
+            })?
+        {
+            return Ok(out);
+        }
+    }
+}
+
+pub(crate) fn list_routes() -> io::Result<Vec<RouteEntry>> {
+    for attempt in 0..3 {
+        match dump() {
+            Err(e)
+                if attempt < 2
+                    && (e.kind() == io::ErrorKind::Interrupted
+                        || e.raw_os_error() == Some(libc::ENOBUFS)) =>
+            {
+                continue;
+            }
+            result => return result,
+        }
+    }
+    unreachable!()
+}
+
+fn linux_proto_to_route_protocol(p: RouteProtocol) -> RouteProtocolKind {
+    match p {
         RouteProtocol::Unspec => RouteProtocolKind::Unspecified,
         RouteProtocol::IcmpRedirect => RouteProtocolKind::IcmpRedirect,
         RouteProtocol::Kernel => RouteProtocolKind::Kernel,
@@ -226,141 +173,239 @@ fn linux_proto_to_route_protocol(p: RouteProtocol) -> Option<RouteProtocolKind> 
         RouteProtocol::Ospf => RouteProtocolKind::Ospf,
         RouteProtocol::Rip => RouteProtocolKind::Rip,
         RouteProtocol::Eigrp => RouteProtocolKind::Eigrp,
-        RouteProtocol::Other(s) => RouteProtocolKind::Other(s.to_string()),
-        #[allow(unreachable_patterns)]
-        _ => return None,
-    };
-    Some(proto)
+        other => RouteProtocolKind::Other(u8::from(other).to_string()),
+    }
 }
 
-fn linux_scope_to_route_scope(scope: RouteScope) -> Option<RouteScopeKind> {
-    let scope = match scope {
+fn linux_scope_to_route_scope(scope: RouteScope) -> RouteScopeKind {
+    match scope {
         RouteScope::Universe => RouteScopeKind::Global,
         RouteScope::Site => RouteScopeKind::Site,
         RouteScope::Link => RouteScopeKind::Link,
         RouteScope::Host => RouteScopeKind::Host,
         RouteScope::NoWhere => RouteScopeKind::Nowhere,
-        RouteScope::Other(s) => RouteScopeKind::Other(s.to_string()),
-        #[allow(unreachable_patterns)]
-        _ => return None,
-    };
-    Some(scope)
+        other => RouteScopeKind::Other(u8::from(other).to_string()),
+    }
 }
 
-fn route_metric(attrs: &[RouteAttribute]) -> Option<u32> {
-    for a in attrs {
-        if let RouteAttribute::Priority(m) = a {
-            return Some(*m);
-        }
-    }
-    None
-}
-
-fn flags_from_linux(
-    rt: &RouteMessage,
-    on_link: bool,
-    prefix_len: Option<u8>,
-    dst: &Option<IpAddr>,
-) -> Vec<RouteFlag> {
-    // - "U": up
-    // - "G": gateway (next-hop, not on_link)
-    // - "H": host route (32 or 128)
-    // - "L": link/scope==link
-    let mut v = vec![RouteFlag::Up];
-    if !on_link {
-        v.push(RouteFlag::Gateway);
-    }
-    if let (Some(pfx), Some(ip)) = (prefix_len, dst) {
-        let is_host = match (ip, pfx) {
-            (IpAddr::V4(_), 32) => true,
-            (IpAddr::V6(_), 128) => true,
-            _ => false,
-        };
-        if is_host {
-            v.push(RouteFlag::Host);
-        }
-    }
-    if matches!(
-        linux_scope_to_route_scope(rt.header.scope),
-        Some(RouteScopeKind::Link)
-    ) {
-        v.push(RouteFlag::Link);
-    }
-    v
-}
-
-fn family_from_af(af: AddressFamily) -> Option<RouteFamily> {
-    match af {
-        AddressFamily::Inet => Some(RouteFamily::Ipv4),
-        AddressFamily::Inet6 => Some(RouteFamily::Ipv6),
+fn address(addr: &RouteAddress) -> Option<IpAddr> {
+    match addr {
+        RouteAddress::Inet(ip) => Some((*ip).into()),
+        RouteAddress::Inet6(ip) => Some((*ip).into()),
         _ => None,
     }
 }
 
-pub fn list_routes_linux() -> io::Result<Vec<RouteEntry>> {
-    let if_map: HashMap<u32, String> = crate::os::unix::unix_interface_map();
+fn gateway(attrs: &[RouteAttribute]) -> Option<IpAddr> {
+    attrs.iter().find_map(|a| match a {
+        RouteAttribute::Gateway(addr) => address(addr),
+        RouteAttribute::Via(RouteVia::Inet(ip)) => Some((*ip).into()),
+        RouteAttribute::Via(RouteVia::Inet6(ip)) => Some((*ip).into()),
+        _ => None,
+    })
+}
 
-    let rts = dump_routes()?;
-
-    let mut out = Vec::new();
-
-    for rt in rts {
-        let family = match family_from_af(rt.header.address_family) {
-            Some(f) => f,
-            None => continue,
+fn append_route(
+    rt: RouteMessage,
+    names: &mut InterfaceNames,
+    ticks: libc::c_long,
+    out: &mut Vec<RouteEntry>,
+) -> io::Result<()> {
+    let hdr = rt.header;
+    let (zero, width): (IpAddr, u8) = match hdr.address_family {
+        AddressFamily::Inet => (Ipv4Addr::UNSPECIFIED.into(), 32),
+        AddressFamily::Inet6 => (Ipv6Addr::UNSPECIFIED.into(), 128),
+        _ => return Ok(()),
+    };
+    let prefix = hdr.destination_prefix_length;
+    if prefix > width || hdr.source_prefix_length > width {
+        return Err(invalid("invalid IP route prefix length"));
+    }
+    let mut dst = (prefix == 0).then_some(zero);
+    let mut src = None;
+    let mut table = u32::from(hdr.table);
+    let mut metric = None;
+    let mut ifindex = None;
+    let mut multipath = None;
+    let mut next_hop_id = None;
+    let mut lifetime_ms = None;
+    for attr in &rt.attributes {
+        match attr {
+            RouteAttribute::Destination(addr) => dst = address(addr),
+            RouteAttribute::Source(addr) => src = address(addr),
+            RouteAttribute::Table(id) => table = *id,
+            RouteAttribute::Priority(n) => metric = Some(*n),
+            RouteAttribute::Oif(i) => ifindex = Some(*i),
+            RouteAttribute::MultiPath(hops) => multipath = Some(hops),
+            RouteAttribute::NhId(id) => next_hop_id = Some(*id),
+            RouteAttribute::CacheInfo(cache) if cache.expires != 0 && ticks > 0 => {
+                // Linux exports rta_expires as signed clock ticks.
+                lifetime_ms = Some((cache.expires as i32).max(0) as u64 * 1000 / ticks as u64);
+            }
+            _ => {}
+        }
+    }
+    let dst = dst.ok_or_else(|| invalid("missing route destination"))?;
+    if hdr.source_prefix_length != 0 && src.is_none() {
+        return Err(invalid("missing route source"));
+    }
+    let source = src.map(|ip| RouteDestination::new(ip, hdr.source_prefix_length));
+    let reject = matches!(
+        hdr.kind,
+        RouteType::BlackHole | RouteType::Unreachable | RouteType::Prohibit
+    );
+    let mut push = |hop: Option<&RouteNextHop>| {
+        let (gateway, index) = match hop {
+            Some(h) => (gateway(&h.attributes), Some(h.interface_index)),
+            None => (gateway(&rt.attributes), ifindex),
         };
-
-        let (dst_ip_opt, pfx_opt, gw_ip_opt, oif_opt) = route_extract(&rt);
-
-        // default route
-        let (dst_ip, pfx) = match (dst_ip_opt, pfx_opt) {
-            (Some(ip), Some(p)) => (ip, p),
-            (None, Some(0)) => match family {
-                RouteFamily::Ipv4 => (IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-                RouteFamily::Ipv6 => (IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-            },
-            (Some(IpAddr::V4(ip)), None) => (IpAddr::V4(ip), 32),
-            (Some(IpAddr::V6(ip)), None) => (IpAddr::V6(ip), 128),
-            _ => continue,
-        };
-
-        let destination = RouteDestination::new(dst_ip, pfx);
-
-        let on_link = gw_ip_opt.is_none();
-        let gateway = if on_link { None } else { gw_ip_opt };
-
-        // ifindex / ifname
-        let ifindex = oif_opt;
-        let ifname = ifindex.and_then(|i| if_map.get(&i).cloned());
-
-        // metric
-        let metric = route_metric(&rt.attributes);
-
-        // proto / scope / table
-        let protocol = linux_proto_to_route_protocol(rt.header.protocol);
-        let scope = linux_scope_to_route_scope(rt.header.scope);
-        let table = Some(rt.header.table as u32);
-
-        // flags (U, G, H, L, ...)
-        let flags = flags_from_linux(&rt, on_link, Some(pfx), &Some(dst_ip));
-
-        let lifetime_ms = None;
-
+        let index = index.filter(|i| *i != 0);
+        let unresolved = hdr.flags.contains(RouteFlags::Unresolved)
+            || hop.is_some_and(|h| h.flags.contains(RouteNextHopFlags::Unresolved));
+        let down = unresolved
+            || hdr
+                .flags
+                .intersects(RouteFlags::Dead | RouteFlags::Linkdown)
+            || hop.is_some_and(|h| {
+                h.flags
+                    .intersects(RouteNextHopFlags::Dead | RouteNextHopFlags::Linkdown)
+            });
+        let mut flags = Vec::new();
+        if !down {
+            flags.push(RouteFlag::Up);
+        }
+        if gateway.is_some() {
+            flags.push(RouteFlag::Gateway);
+        }
+        if prefix == width {
+            flags.push(RouteFlag::Host);
+        }
+        if hdr.scope == RouteScope::Link {
+            flags.push(RouteFlag::Link);
+        }
+        if reject {
+            flags.push(RouteFlag::Reject);
+        }
+        if hdr.protocol == RouteProtocol::Static {
+            flags.push(RouteFlag::Static);
+        }
         out.push(RouteEntry {
-            family,
-            destination,
+            family: RouteFamily::from(dst),
+            destination: RouteDestination::new(dst, prefix),
+            source: source.clone(),
+            destination_scope_id: None,
+            gateway_scope_id: None,
+            next_hop_id,
+            next_hop_weight: hop.map(|h| u16::from(h.hops) + 1),
             gateway,
-            on_link,
-            ifindex,
-            ifname,
+            on_link: index.is_some()
+                && gateway.is_none()
+                && !unresolved
+                && !reject
+                && hdr.kind != RouteType::Throw,
+            ifindex: index,
+            ifname: index.and_then(|i| names.lookup(i)),
             metric,
             flags,
-            protocol,
-            scope,
-            table,
+            protocol: Some(linux_proto_to_route_protocol(hdr.protocol)),
+            scope: Some(linux_scope_to_route_scope(hdr.scope)),
+            table: Some(table),
             lifetime_ms,
         });
+    };
+    match multipath {
+        Some(hops) if hops.is_empty() => return Err(invalid("empty multipath route")),
+        Some(hops) => {
+            for hop in hops {
+                push(Some(hop));
+            }
+        }
+        None => push(None),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use netlink_packet_core::{NLMSG_DONE, NLMSG_OVERRUN};
+
+    fn control(kind: u16, flags: u16, code: i32) -> Vec<u8> {
+        let mut bytes = vec![0; 20];
+        bytes[..4].copy_from_slice(&20u32.to_ne_bytes());
+        bytes[4..6].copy_from_slice(&kind.to_ne_bytes());
+        bytes[6..8].copy_from_slice(&flags.to_ne_bytes());
+        bytes[8..12].copy_from_slice(&1u32.to_ne_bytes());
+        bytes[16..].copy_from_slice(&code.to_ne_bytes());
+        bytes
     }
 
-    Ok(out)
+    #[test]
+    fn only_a_successful_matching_done_completes_a_dump() {
+        let parse = |data: &[u8], seq| parse_datagram(data, seq, |_| unreachable!());
+        let done = control(NLMSG_DONE, 0, 0);
+        assert!(!parse(&done, 2).unwrap());
+        assert!(parse(&done, 1).unwrap());
+        assert!(parse(&done[..18], 1).is_err());
+        assert_eq!(
+            parse(&control(NLMSG_DONE, 0, -libc::EPERM), 1)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            parse(&control(NLMSG_DONE, NLM_F_DUMP_INTR, 0), 1)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert_eq!(
+            parse(&control(NLMSG_OVERRUN, 0, 0), 1)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOBUFS)
+        );
+    }
+
+    #[test]
+    fn multipath_preserves_weights_interfaces_and_extended_table() {
+        let mut msg = RouteMessage::default();
+        msg.header.address_family = AddressFamily::Inet;
+        let mut first = RouteNextHop::default();
+        first.interface_index = 7;
+        first
+            .attributes
+            .push(RouteAttribute::Gateway(RouteAddress::Inet(
+                [192, 0, 2, 1].into(),
+            )));
+        let mut second = RouteNextHop::default();
+        second.interface_index = 8;
+        second.hops = 255;
+        second.flags = RouteNextHopFlags::Dead;
+        second.attributes.push(RouteAttribute::Via(RouteVia::Inet6(
+            "fe80::1".parse().unwrap(),
+        )));
+        msg.attributes = vec![
+            RouteAttribute::Table(10001),
+            RouteAttribute::MultiPath(vec![first, second]),
+        ];
+        let mut rows = Vec::new();
+        append_route(msg, &mut InterfaceNames::default(), 100, &mut rows).unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row.destination.to_string(), "0.0.0.0/0");
+            assert_eq!(row.table, Some(10001));
+            assert!(!row.on_link);
+        }
+        assert_eq!(
+            (rows[0].ifindex, rows[0].next_hop_weight),
+            (Some(7), Some(1))
+        );
+        assert_eq!(
+            (rows[1].ifindex, rows[1].next_hop_weight),
+            (Some(8), Some(256))
+        );
+        assert_eq!(rows[1].gateway, Some("fe80::1".parse().unwrap()));
+        assert!(!rows[1].flags.contains(&RouteFlag::Up));
+    }
 }

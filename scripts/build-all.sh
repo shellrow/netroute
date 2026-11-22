@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-# target platforms
-TARGETS=(
+targets=(
     x86_64-unknown-linux-gnu
     aarch64-unknown-linux-gnu
     x86_64-unknown-freebsd
@@ -10,16 +9,6 @@ TARGETS=(
     x86_64-linux-android
 )
 
-# cross build
-for target in "${TARGETS[@]}"; do
-    echo "==> Building for $target..."
-    if cross build --target "$target"; then
-        echo "✅ Success: $target"
-    else
-        echo "❌ Failed: $target"
-        exit 1
-    fi
+for target in "${targets[@]}"; do
+    cross build --all-features --target "$target"
 done
-
-echo ""
-echo "✅ All builds succeeded!"
